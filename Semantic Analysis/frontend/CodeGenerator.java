@@ -254,9 +254,35 @@ public class CodeGenerator {
                 if (first.getType().equals("STRCON")) {
                     String str = first.getValue();  // 获取STRCON值 比如 "21371295\n"
                     System.out.println("[DEBUG] 输出字符串常量: " + str);
+
+                    // ✅ 直接进行转义处理
+                    String parsed = parseEscapes(str);
+                    System.out.println("[DEBUG] 格式化解析后字符串: " + parsed);
+
+                    // ✅ 统计 format 占位符数量
+                    int formatCount = 0;
+                    for (int i = 0; i < parsed.length(); i++) {
+                        if (parsed.charAt(i) == '%' && i + 1 < parsed.length()) {
+                            char next = parsed.charAt(i + 1);
+                            if (next == 'd' || next == 'c' || next == 's') {
+                                formatCount++;
+                                i++;
+                            }
+                        }
+                    }
+
+                    // ✅ 压入对应数量的参数表达式
+                    for (int i = 1; i <= formatCount; i++) {
+                        ASTNode argExp = node.getChildren().get(i);
+                        visit(argExp); // ⚠️ 顺序和 format 一一对应
+                    }
+
                     // 如果你支持字符串输出，建议加入 PRINTSTR 指令（可自定义）
                     int idx = getStringIndex(str);
                     emit(new PCode(PCode.OpCode.PRINTSTR, 0, idx), node); // 🎯生成PRINTSTR指令
+                
+                    // ✅ 提前 break，不再进入后面的 PRINT 循环
+                    break;
                 }
 
                 // 遍历参数表达式 Exp

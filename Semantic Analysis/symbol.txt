@@ -1,3 +1,1 @@
-2 i Int
-2 a Int
-2 b Int
+1 test Int

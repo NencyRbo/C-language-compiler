@@ -198,11 +198,47 @@ public class PCodeExecutor {
                         break;
                     
                     case PRINTSTR:
-                        String raw = stringPool.get(inst.getAddress()); // 取字符串
-                        String parsed = parseEscapes(raw);
-                        System.out.println("[OUTPUT] " + parsed);
-                        writer.write(parsed + "\n"); // ✅ 写入 pcoderesult.txt
-                        break;
+                        String raw = stringPool.get(inst.getAddress());
+                        String parsed = parseEscapes(raw);  // 原始字符串 + 转义处理
+                    
+                        // 构建格式化后的最终字符串
+                        StringBuilder sb = new StringBuilder();
+                        int i = 0;
+                    
+                        while (i < parsed.length()) {
+                            char ch = parsed.charAt(i);
+                            if (ch == '%' && i + 1 < parsed.length()) {
+                                char next = parsed.charAt(i + 1);
+                                switch (next) {
+                                    case 'd':
+                                        if (dataStack.isEmpty()) throw new RuntimeException("printf: 缺少 %d 参数");
+                                        sb.append(dataStack.pop());
+                                        break;
+                                    case 'c':
+                                        if (dataStack.isEmpty()) throw new RuntimeException("printf: 缺少 %c 参数");
+                                        sb.append((char) (int) dataStack.pop());  // 注意类型转换
+                                        break;
+                                    case 's':
+                                        if (dataStack.isEmpty()) throw new RuntimeException("printf: 缺少 %s 参数");
+                                        int strIndex = dataStack.pop();
+                                        if (strIndex < 0 || strIndex >= stringPool.size())
+                                            throw new RuntimeException("printf: %s 字符串索引非法");
+                                        sb.append(parseEscapes(stringPool.get(strIndex)));
+                                        break;
+                                    default:
+                                        sb.append('%').append(next); // 非格式化指令，原样输出
+                                }
+                                i += 2;
+                            } else {
+                                sb.append(ch);
+                                i++;
+                            }
+                        }
+                    
+                        String finalOutput = sb.toString();
+                        System.out.println("[OUTPUT] " + finalOutput);
+                        writer.write(finalOutput);
+                        break;                    
 
                     case READ:
                         try {
