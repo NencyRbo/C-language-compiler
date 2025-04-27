@@ -3,6 +3,10 @@ package frontend;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Stack;
+
+import frontend.PCode.OpCode;
+
 import java.util.HashMap;
 
 public class CodeGenerator {
@@ -13,14 +17,23 @@ public class CodeGenerator {
     // ✅ 全局字符串池
     private Map<String, Integer> stringTable = new HashMap<>();
     public static List<String> stringPool = new ArrayList<>();
+    private Map<Integer, Integer> labelAddressMap = new HashMap<>(); // if和for用的回填地址表
 
     // 你的原有变量...
     private List<PCode> pcodeList = new ArrayList<>();
     private int labelCount = 0;
 
+    private Stack<Integer> exitLabelStack = new Stack<>();
+    private Stack<Integer> stepLabelStack = new Stack<>();
+
+
     public List<PCode> generate(ASTNode node) {
         System.out.println("[DEBUG] CodeGenerator: 开始生成中间代码");
         visit(node);
+
+        // visit结束后统一回填
+        patchLabels();  
+
         System.out.println("[DEBUG] CodeGenerator: 中间代码生成完成，共生成 " + codeList.size() + " 条指令");
         System.out.println("[DEBUG] 函数入口点映射: " + funcEntryMap);
         return codeList;
@@ -212,11 +225,44 @@ public class CodeGenerator {
                 // 赋值语句的值通常不留在栈上，STO 会消耗栈顶元素
                 break;
 
+            case "AssignExp":
+                // 处理赋值表达式：先计算右值，然后存储到左值
+                System.out.println("[DEBUG] 处理AssignExp节点 (For专用-赋值表达式-不吃分号版)");
+                // 处理赋值表达式：step部分，比如 i = i + 1
+
+                System.out.println("[DEBUG] 访问右值表达式...");
+                visit(node.getChildren().get(1)); // 访问右值表达式（i+1）
+
+                ASTNode lvalNode = node.getChildren().get(0);
+                name = lvalNode.getChildren().get(0).getValue();
+                addr = getVarAddress(name);
+
+                System.out.println("[DEBUG] 左值变量名: " + name + "，变量地址: " + addr);
+
+                System.out.println("[DEBUG] [AssignExp] 生成 STO 指令: " + name + " 地址 " + addr);
+                emit(new PCode(PCode.OpCode.STO, 0, addr), node);
+                break;
+            
+
             case "Exp":
                 // 处理表达式
                 for (ASTNode child : node.getChildren()) {
                     visit(child);
                 }
+                // ASTNode child = node.getChildren().get(0);
+                // String childType = child.getType(); // 判断孩子节点的类型！！！
+
+                // if (childType.equals("AddExp")) {
+                //     visit(child);
+                // } else if (childType.equals("RelExp")) {
+                //     visit(child);
+                // } else if (childType.equals("MulExp")) {
+                //     visit(child);
+                // } else if (childType.equals("UnaryExp")) {
+                //     visit(child);
+                // } else {
+                //     System.err.println("x:[ERROR] Exp节点遇到未知子节点类型: " + childType);
+                // }
                 break;
 
             case "Getint":
@@ -348,9 +394,9 @@ public class CodeGenerator {
 
             case "Number":
                 System.out.println("[DEBUG] 处理 Number");
-                for (ASTNode child : node.getChildren()) {
-                    if (child.getType().equals("IntLiteral") || child.getType().equals("INTCON")) {
-                        visit(child); // 访问 IntLiteral 或 INTCON
+                for (ASTNode childNode : node.getChildren()) {
+                    if (childNode.getType().equals("IntLiteral") || childNode.getType().equals("INTCON")) {
+                        visit(childNode); // 访问 IntLiteral 或 INTCON
                         break; // Number 下通常只有一个常量
                     }
                 }
@@ -458,7 +504,287 @@ public class CodeGenerator {
                 }
                 break;
 
+            case "IfStmt":
+                System.out.println("[DEBUG] 处理 IfStmt");
 
+                // 获取IfStmt的子节点
+                ASTNode condNode = node.getChildren().get(0); // 条件判断
+                ASTNode thenNode = node.getChildren().get(1); // then分支
+                ASTNode elseNode = (node.getChildren().size() > 2) ? node.getChildren().get(2) : null; // else分支（可能有可能没有）
+
+                int elseLabel = labelCount++;
+                int exitLabel = labelCount++;
+
+                // 先生成条件判断
+                visit(condNode);
+
+                if (elseNode != null) {
+                    // 有else分支
+
+                    // 条件不满足跳转到else
+                    emit(new PCode(PCode.OpCode.JPC, 0, elseLabel), node);
+
+                    // then分支
+                    visit(thenNode);
+
+                    // 执行完then后直接跳出整个if-else结构
+                    emit(new PCode(PCode.OpCode.JMP, 0, exitLabel), node);
+
+                    // elseLabel的实际地址就是当前pc
+                    // elseLabel 代表 "else分支开始"的位置
+                    // 回填指令地址
+                    // 真正生成时，很多指令的跳转目标，根本还没生成出来，只能先占位
+                    // codeList.size()就是current pc
+                    labelAddressMap.put(elseLabel, codeList.size());
+
+                    // else分支
+                    visit(elseNode);
+
+                    // exitLabel 代表 "整个if-else结束"的位置。
+                    labelAddressMap.put(exitLabel, codeList.size()); // if-else结束
+                } else {
+                    // 没有else分支
+
+                    // 条件不满足跳到if外
+                    emit(new PCode(PCode.OpCode.JPC, 0, exitLabel), node);
+
+                    // then分支
+                    visit(thenNode);
+
+                    // exitLabel打标记（逻辑上，不是emit）
+                    labelAddressMap.put(exitLabel, codeList.size()); // 让跳转地址在labelAddressMap中记录
+                }
+
+                break;
+
+            case "ForStmt":
+                System.out.println("[DEBUG] 处理 ForStmt");
+            
+                // for循环各部分
+                ASTNode initNode = node.getChildren().get(0);  // 初始赋值
+                condNode = node.getChildren().get(1);  // 条件
+                ASTNode stepNode = node.getChildren().get(2);  // 步进
+                List<ASTNode> bodyNodes = node.getChildren().subList(3, node.getChildren().size()); // 循环体
+            
+                // 生成init部分
+                if (initNode != null && !"Null".equals(initNode.getType())) {
+                    System.out.println("[DEBUG] 生成For循环初始化部分...");
+                    visit(initNode);
+                }
+            
+                int condLabel = labelCount++;
+                exitLabel = labelCount++;
+                int stepLabel = labelCount++;
+
+                exitLabelStack.push(exitLabel);
+                stepLabelStack.push(stepLabel);
+            
+                // condLabel:
+                System.out.println("[DEBUG] 记录循环条件condLabel = " + condLabel + ", 循环结束exitLabel = " + exitLabel);
+                labelAddressMap.put(condLabel, codeList.size());
+
+                // 生成cond条件判断
+                if (condNode != null && !"Null".equals(condNode.getType())) {
+                    System.out.println("[DEBUG] 生成 For循环 条件判断部分");
+                    visit(condNode);
+                    // 条件不满足，跳到exitLabel
+                    emit(new PCode(PCode.OpCode.JPC, 0, exitLabel), node);
+                } else {
+                    System.out.println("[DEBUG] 条件为空，永不跳出 (死循环)");
+                    // 注意，如果没有cond条件，要小心死循环
+                    // 不加JPC，直接继续执行体
+                }
+            
+                // 生成循环体 body
+                System.out.println("[DEBUG] 生成循环体 body...");
+                for (ASTNode stmt : bodyNodes) {
+                    visit(stmt);
+                }
+
+                labelAddressMap.put(stepLabel, codeList.size());
+            
+                // 生成步进 step
+                if (stepNode != null && !"Null".equals(stepNode.getType())) {
+                    System.out.println("[DEBUG] 生成 For循环 步进部分");
+                    visit(stepNode);
+                }
+            
+                // 回到条件判断
+                System.out.println("[DEBUG] 回跳到循环条件判断 condLabel...");
+                emit(new PCode(PCode.OpCode.JMP, 0, condLabel), node);
+            
+                // exitLabel:
+                System.out.println("[DEBUG] 设置exitLabel实际位置：PC=" + codeList.size());
+                labelAddressMap.put(exitLabel, codeList.size());
+
+                exitLabelStack.pop();
+                stepLabelStack.pop();
+            
+                break;
+            
+            case "RelExp":
+            case "RelExp_LSS":
+            case "RelExp_LEQ":
+            case "RelExp_GRE":
+            case "RelExp_GEQ":
+            case "RelExp_EQL":
+            case "RelExp_NEQ":
+                // RelExp: AddExp | RelExp ('<' | '>' | '<=' | '>=') AddExp
+                System.out.println("[DEBUG] 处理 RelExp 类节点");
+
+                if (node.getChildren().size() == 2) {
+                    // ========================
+                    // ✅ 处理 RelExp_GRE / RelExp_LSS 这种简化节点
+                    // 节点只有两个孩子：左边AddExp，右边AddExp
+                    // 操作符信息藏在节点类型名里（如 RelExp_GRE）
+                    // ========================
+                    
+                    ASTNode left = node.getChildren().get(0); // 左表达式
+                    ASTNode right = node.getChildren().get(1); // 右表达式
+
+                    // 先生成左右子表达式的计算代码
+                    visit(left);
+                    visit(right);
+
+                    // 截取节点名，比如从"RelExp_GRE"截出"GRE"
+                    String relOp = node.getType().substring("RelExp_".length());
+
+                    switch (relOp) {
+                        case "LSS": // <
+                            emit(new PCode(PCode.OpCode.LSS, 0, 0), node);
+                            break;
+                        case "LEQ": // <=
+                            emit(new PCode(PCode.OpCode.LEQ, 0, 0), node);
+                            break;
+                        case "GRE": // >
+                            emit(new PCode(PCode.OpCode.GTR, 0, 0), node);
+                            break;
+                        case "GEQ": // >=
+                            emit(new PCode(PCode.OpCode.GEQ, 0, 0), node);
+                            break;
+                        case "EQL": // ==
+                            emit(new PCode(PCode.OpCode.EQL, 0, 0), node);
+                            break;
+                        case "NEQ": // !=
+                            emit(new PCode(PCode.OpCode.NEQ, 0, 0), node);
+                            break;
+                        default:
+                            // 遇到未知操作符，输出错误信息
+                            System.err.println("[ERROR] 不支持的RelExp操作符类型: " + node.getType());
+                    }
+
+                } else if (node.getChildren().size() == 3) {
+                    // ========================
+                    // ✅ 处理标准RelExp节点（带操作符子节点）
+                    // 节点有三个孩子：左AddExp，右AddExp，中间是操作符（比如 "<"）
+                    // 操作符信息存在opNode.getValue()里
+                    // ========================
+
+                    ASTNode left = node.getChildren().get(0); // 左表达式
+                    ASTNode right = node.getChildren().get(1); // 右表达式
+                    ASTNode opNode = node.getChildren().get(2); // 中间符号节点
+
+                    // 先生成左右子表达式的计算代码
+                    visit(left);
+                    visit(right);
+
+                    // 取出操作符，比如 "<"、">"、"=="等
+                    String op = opNode.getValue();
+
+                    switch (op) {
+                        case "<":
+                            emit(new PCode(PCode.OpCode.LSS, 0, 0), node);
+                            break;
+                        case ">":
+                            emit(new PCode(PCode.OpCode.GTR, 0, 0), node);
+                            break;
+                        case "<=":
+                            emit(new PCode(PCode.OpCode.LEQ, 0, 0), node);
+                            break;
+                        case ">=":
+                            emit(new PCode(PCode.OpCode.GEQ, 0, 0), node);
+                            break;
+                        case "==":
+                            emit(new PCode(PCode.OpCode.EQL, 0, 0), node);
+                            break;
+                        case "!=":
+                            emit(new PCode(PCode.OpCode.NEQ, 0, 0), node);
+                            break;
+                        default:
+                            System.err.println("[ERROR] 不支持的RelExp符号: " + op);
+                    }
+                } else {
+                    // 出错保护：防止AST结构意外
+                    System.err.println("[ERROR] RelExp 节点子节点数量异常: " + node.getChildren().size());
+                }
+                break;
+            
+            // 逻辑或 ||
+            case "LOrExp":
+                System.out.println("[DEBUG] 处理 LOrExp 节点");
+            
+                ASTNode LOrleft = node.getChildren().get(0); // 左表达式
+                ASTNode LOrright = node.getChildren().get(1); // 右表达式
+                visit(LOrleft); // 左边表达式
+                visit(LOrright); // 右边表达式
+            
+                // 栈顶两个元素做逻辑或
+                emit(new PCode(PCode.OpCode.OR, 0, 0), node);
+                break;
+
+            case "LAndExp":
+                System.out.println("[DEBUG] 处理 LAndExp 节点");
+            
+                ASTNode LAndleft = node.getChildren().get(0); // 左表达式
+                ASTNode LAndright = node.getChildren().get(1); // 右表达式
+                visit(LAndleft); // 左边表达式
+                visit(LAndright); // 右边表达式
+            
+                // 栈顶两个元素做逻辑与
+                emit(new PCode(PCode.OpCode.AND, 0, 0), node);
+                break;
+
+                case "EqExp_EQL":
+                System.out.println("[DEBUG] 处理 EqExp_EQL 节点 (==)");
+            
+                ASTNode Eqleft = node.getChildren().get(0); // 左表达式
+                ASTNode Eqright = node.getChildren().get(1); // 右表达式
+                visit(Eqleft); // 左边表达式
+                visit(Eqright); // 右边表达式
+            
+                emit(new PCode(PCode.OpCode.EQL, 0, 0), node);
+                break;
+            
+            case "EqExp_NEQ":
+                System.out.println("[DEBUG] 处理 EqExp_NEQ 节点 (!=)");
+            
+                ASTNode NEQleft = node.getChildren().get(0); // 左表达式
+                ASTNode NEQright = node.getChildren().get(1); // 右表达式
+                visit(NEQleft); // 左边表达式
+                visit(NEQright); // 右边表达式
+            
+                emit(new PCode(PCode.OpCode.NEQ, 0, 0), node);
+                break;
+
+            case "BreakStmt":
+                if (exitLabelStack.isEmpty()) {
+                    throw new RuntimeException("[ERROR] break不在循环内部使用！");
+                }
+                int breakTarget = exitLabelStack.peek();
+                System.out.println("[DEBUG] 遇到break，跳转到 exitLabel: " + breakTarget);
+                emit(new PCode(PCode.OpCode.JMP, 0, breakTarget), node);
+                break;
+            
+            case "ContinueStmt":
+                if (stepLabelStack.isEmpty()) {
+                    throw new RuntimeException("[ERROR] continue不在循环内部使用！");
+                }
+                int continueTarget = stepLabelStack.peek();
+                System.out.println("[DEBUG] 遇到continue，跳转到 stepLabel: " + continueTarget);
+                emit(new PCode(PCode.OpCode.JMP, 0, continueTarget), node);
+                break;
+            
+            
             case "UnaryOp": // UnaryOp 节点通常只包含操作符 Token
                 // 不直接生成代码，由 UnaryExp 处理
                 break;
@@ -466,11 +792,27 @@ public class CodeGenerator {
             default:
                 System.out.println("⚠️ CodeGenerator: 未处理的节点类型: " + node.getType() + "，尝试访问子节点...");
                 // 兜底策略：尝试访问子节点，可能适用于某些容器型节点
-                for (ASTNode child : node.getChildren()) {
-                    visit(child);
+                for (ASTNode childnNode : node.getChildren()) {
+                    visit(childnNode);
                 }
         }
     }
+
+    private void patchLabels() {
+        for (int i = 0; i < codeList.size(); i++) {
+            PCode inst = codeList.get(i);
+            if (inst.getOp() == PCode.OpCode.JMP || inst.getOp() == PCode.OpCode.JPC) {
+                int labelId = inst.getAddress();
+                Integer realPc = labelAddressMap.get(labelId);
+                if (realPc == null) {
+                    throw new RuntimeException("[ERROR] Label回填失败: 找不到 label " + labelId);
+                }
+                System.out.println("[回填] 将第" + i + "条指令的跳转地址 " + labelId + " -> 实际PC " + realPc);
+                inst.setAddress(realPc);
+            }
+        }
+    }
+    
 
     private int getVarAddress(String varName) {
         if (varName == null || varName.isEmpty()) {
@@ -488,5 +830,6 @@ public class CodeGenerator {
         varAddressMap.put(varName, address);
         System.out.println("[DEBUG] 为变量 '" + varName + "' 分配新地址: " + address);
         return address;
-    }
+    }   
+
 }

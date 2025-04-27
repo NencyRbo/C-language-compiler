@@ -1,13 +1,16 @@
-package frontend;
+import frontend.*;
+import frontend.Error;
 
 import java.io.*;
 import java.util.*;
 
 public class Compiler {
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
+        // ✅ 将输入重定向为 input.txt
+        System.setIn(new FileInputStream("data/input.txt"));
         System.out.println("Step 1: 开始词法分析...");
         Lexer lexer = new Lexer();
-        List<Token> tokens = lexer.tokenize("testfile.txt");
+        List<Token> tokens = lexer.tokenize("data/testfile.txt");
         System.out.println("词法分析完成，Token数: " + tokens.size());
 
         // 收集错误
@@ -21,7 +24,7 @@ public class Compiler {
 
         // 错误排序输出
         errors.sort(Comparator.comparingInt(e -> e.lineNumber));
-        try (PrintWriter writer = new PrintWriter("error.txt")) {
+        try (PrintWriter writer = new PrintWriter("data/error.txt")) {
             Set<Integer> outputtedLines = new HashSet<>();
             for (Error error : errors) {
                 if (!outputtedLines.contains(error.lineNumber)) {
@@ -38,7 +41,7 @@ public class Compiler {
             System.out.println("无语法错误，继续生成 symbol.txt / pcode.txt / pcoderesult.txt");
 
             // 输出符号表
-            try (PrintWriter writer = new PrintWriter("symbol.txt")) {
+            try (PrintWriter writer = new PrintWriter("data/symbol.txt")) {
                 parser.symbolList.sort(Comparator.comparingInt(s -> s.scopeLevel));
                 for (Symbol symbol : parser.symbolList) {
                     writer.println(symbol.scopeLevel + " " + symbol.name + " " + symbol.type);
@@ -55,7 +58,7 @@ public class Compiler {
             System.out.println("中间代码生成完成，指令数: " + pcodes.size());
 
             // 写入 pcode.txt
-            try (PrintWriter writer = new PrintWriter("pcode.txt")) {
+            try (PrintWriter writer = new PrintWriter("data/pcode.txt")) {
                 for (PCode code : pcodes) {
                     writer.println(code);
                 }

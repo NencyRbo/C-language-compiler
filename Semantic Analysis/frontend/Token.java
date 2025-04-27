@@ -14,4 +14,7 @@ public class Token {
      public String toString() {
         return type.name() + " " + value;
     }
+     public TokenType getType() {
+        return type;
+     }
 }

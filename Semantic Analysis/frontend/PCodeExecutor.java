@@ -15,6 +15,7 @@ public class PCodeExecutor {
     private int pc = 0; // 程序计数器
     private Scanner scanner = new Scanner(System.in);
     private List<String> stringPool = CodeGenerator.stringPool;
+    boolean stepByStep = false; // 默认开启单步调试
 
     public void setStringPool(List<String> pool) {
         this.stringPool = pool;
@@ -72,11 +73,24 @@ public class PCodeExecutor {
         // System.out.println("[DEBUG] PCodeExecutor: 初始化，栈底标记: " + END_OF_EXECUTION_MARKER);
 
         try {
-            writer = new BufferedWriter(new FileWriter("pcoderesult.txt"));
+            writer = new BufferedWriter(new FileWriter("data/pcoderesult.txt"));
             System.out.println("[DEBUG] PCodeExecutor: 开始执行，指令总数: " + instructions.size());
 
             while (pc >= 0 && pc < instructions.size()) { // 确保 pc 在有效范围内
                 PCode inst = instructions.get(pc);
+
+                // 插入单步调试提示 👇
+                if (stepByStep) {
+                    System.out.println("[DEBUG] 当前PC=" + pc + ", 准备执行指令=" + inst);
+                    System.out.print("按回车继续下一步，输入q后回车退出... ");
+                    String input = scanner.nextLine();
+                    if ("q".equalsIgnoreCase(input.trim())) {
+                        System.out.println("[DEBUG] 用户请求终止执行，退出PCode执行器！");
+                        break;
+                    }
+                }
+                // 👆单步调试完毕！
+
                 PCode.OpCode op = inst.getOp();
                 System.out.println("[DEBUG] === PC: " + pc + ", 指令: " + inst + ", 栈顶: " + (dataStack.isEmpty() ? "空" : dataStack.peek()) + " ===");
 
@@ -170,12 +184,18 @@ public class PCodeExecutor {
                          System.out.println("[DEBUG] EQL: " + eqlA + " == " + eqlB + " -> " + dataStack.peek() + ". 栈: " + dataStack);
                          break;
 
+                    // 无条件跳转（jump）
+                    // 直接跳！不管栈顶的值！
+                    // 	for循环跳回判断，if-then后跳到if结束
                     case JMP:
                         int jmpAddr = inst.getAddress();
                         System.out.println("[DEBUG] JMP: 无条件跳转到地址 " + jmpAddr);
                         pc = jmpAddr;
                         break;
 
+                    // 条件跳转（Jump if Condition）
+                    // 弹出栈顶元素，如果是0就跳，否则继续。
+                    // if条件判断失败跳到else或者出口，for判断失败跳出循环
                     case JPC:
                          if (dataStack.isEmpty()) throw new RuntimeException("Stack underflow on JPC");
                          int condition = dataStack.pop();
@@ -187,6 +207,62 @@ public class PCodeExecutor {
                          } else {
                               System.out.println("[DEBUG] JPC: 条件非 0, 不跳转");
                          }
+                         break;
+
+                    case GTR:
+                         if (dataStack.size() < 2) throw new RuntimeException("Stack underflow on GTR");
+                         int gtrB = dataStack.pop(); 
+                         int gtrA = dataStack.pop();
+                         dataStack.push(gtrA > gtrB ? 1 : 0);
+                         System.out.println("[DEBUG] GTR: " + gtrA + " > " + gtrB + " -> " + dataStack.peek() + ". 栈: " + dataStack);
+                         break;
+                    
+                    case LSS:
+                         if (dataStack.size() < 2) throw new RuntimeException("Stack underflow on LSS");
+                         int lssB = dataStack.pop(); 
+                         int lssA = dataStack.pop();
+                         dataStack.push(lssA < lssB ? 1 : 0);
+                         System.out.println("[DEBUG] LSS: " + lssA + " < " + lssB + " -> " + dataStack.peek() + ". 栈: " + dataStack);
+                         break;
+                     
+                    case LEQ:
+                         if (dataStack.size() < 2) throw new RuntimeException("Stack underflow on LEQ");
+                         int leqB = dataStack.pop(); 
+                         int leqA = dataStack.pop();
+                         dataStack.push(leqA <= leqB ? 1 : 0);
+                         System.out.println("[DEBUG] LEQ: " + leqA + " <= " + leqB + " -> " + dataStack.peek() + ". 栈: " + dataStack);
+                         break;
+                     
+                    case GEQ:
+                         if (dataStack.size() < 2) throw new RuntimeException("Stack underflow on GEQ");
+                         int geqB = dataStack.pop(); 
+                         int geqA = dataStack.pop();
+                         dataStack.push(geqA >= geqB ? 1 : 0);
+                         System.out.println("[DEBUG] GEQ: " + geqA + " >= " + geqB + " -> " + dataStack.peek() + ". 栈: " + dataStack);
+                         break;
+                     
+                    case NEQ:
+                         if (dataStack.size() < 2) throw new RuntimeException("Stack underflow on NEQ");
+                         int neqB = dataStack.pop(); 
+                         int neqA = dataStack.pop();
+                         dataStack.push(neqA != neqB ? 1 : 0);
+                         System.out.println("[DEBUG] NEQ: " + neqA + " != " + neqB + " -> " + dataStack.peek() + ". 栈: " + dataStack);
+                         break;
+
+                    case OR:
+                         if (dataStack.size() < 2) throw new RuntimeException("Stack underflow on OR");
+                         int orB = dataStack.pop(); 
+                         int orA = dataStack.pop();
+                         dataStack.push((orA != 0 || orB != 0) ? 1 : 0);
+                         System.out.println("[DEBUG] OR: " + orA + " || " + orB + " -> " + dataStack.peek() + ". 栈: " + dataStack);
+                         break;
+                     
+                    case AND:
+                         if (dataStack.size() < 2) throw new RuntimeException("Stack underflow on AND");
+                         int andB = dataStack.pop(); 
+                         int andA = dataStack.pop();
+                         dataStack.push((andA != 0 && andB != 0) ? 1 : 0);
+                         System.out.println("[DEBUG] AND: " + andA + " && " + andB + " -> " + dataStack.peek() + ". 栈: " + dataStack);
                          break;
 
                     case PRINT:

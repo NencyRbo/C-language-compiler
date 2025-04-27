@@ -17,7 +17,8 @@ public class PCode {
         SWAP,                    // 交换栈顶两个元素 (新增)
         PRINT,                   // 输出
         PRINTSTR,                // 输出字符串常量 ✅新加
-        READ                     // 输入
+        READ,                    // 输入
+        OR,AND,NOT,              // 逻辑运算 (新增 OR, AND, NOT)
     }
 
     private OpCode op;
@@ -27,6 +28,10 @@ public class PCode {
     public PCode(OpCode op, int level, int address) {
         this.op = op;
         this.level = level;
+        this.address = address;
+    }
+
+    public void setAddress(int address) {
         this.address = address;
     }
 
