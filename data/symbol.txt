@@ -1,1 +1,2 @@
-2 a Int
+3 a Int
+4 a Int

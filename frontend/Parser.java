@@ -748,12 +748,16 @@ public class Parser {
     private ASTNode Block(boolean isFuncBlock) {
         ASTNode blockNode = new ASTNode("Block");
         if (match(TokenType.LBRACE)) {
+            enterScope();  // ✅ 开启新作用域！
+
             while (isBlockItem()) {
                 ASTNode itemNode = BlockItem();
                 if (itemNode != null) {
                     blockNode.addChild(itemNode);
                 }
             }
+            exitScope();  // ✅ 退出作用域！
+            
             if (!match(TokenType.RBRACE)) {
                 reportError('j');
             }
