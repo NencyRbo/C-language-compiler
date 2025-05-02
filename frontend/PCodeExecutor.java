@@ -76,7 +76,13 @@ public class PCodeExecutor {
             writer = new BufferedWriter(new FileWriter("data/pcoderesult.txt"));
             System.out.println("[DEBUG] PCodeExecutor: 开始执行，指令总数: " + instructions.size());
 
+            System.out.println("[DEBUG] 初始PC = " + pc);
+            System.out.println("[DEBUG] 指令总数 = " + instructions.size());
+            System.out.println("[DEBUG] 第一条指令 = " + instructions.get(0));
+
             while (pc >= 0 && pc < instructions.size()) { // 确保 pc 在有效范围内
+                System.out.println("[TRACE] 当前 PC = " + pc + ", 当前指令: " + instructions.get(pc));
+
                 PCode inst = instructions.get(pc);
 
                 // 插入单步调试提示 👇
@@ -313,7 +319,7 @@ public class PCodeExecutor {
                     
                         String finalOutput = sb.toString();
                         System.out.println("[OUTPUT] " + finalOutput);
-                        writer.write(finalOutput);
+                        writer.write(finalOutput+ "\n");
                         break;                    
 
                     case READ:

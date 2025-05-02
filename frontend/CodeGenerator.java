@@ -20,7 +20,7 @@ public class CodeGenerator {
     private Map<Integer, Integer> labelAddressMap = new HashMap<>(); // if和for用的回填地址表
 
     // 你的原有变量...
-    private List<PCode> pcodeList = new ArrayList<>();
+    // private List<PCode> pcodeList = new ArrayList<>();
     private int labelCount = 0;
 
     private Stack<Integer> exitLabelStack = new Stack<>();
@@ -115,7 +115,9 @@ public class CodeGenerator {
 
 
             case "Block":
+            System.out.println("[DEBUG] 处理 Block（交错顺序遍历语句与变量声明）");
                 for (ASTNode child : node.getChildren()) {
+                    System.out.println("[DEBUG] 遍历子节点: " + child.getType());
                     visit(child);
                 }
                 break;
@@ -285,10 +287,43 @@ public class CodeGenerator {
                 // 在实际输出时会被 Printf 节点处理
                 break;
 
+            case "InitVal":
+                System.out.println("[DEBUG] 处理 InitVal 节点");
+                for (ASTNode child : node.getChildren()) {
+                    System.out.println("[DEABUG] 处理 InitVal 节点，子节点数: " + node.getChildren().size());
+                    visit(child); // 直接访问 InitVal 内部的 Exp 节点
+                }
+                break;
+
+            case "VarDef":
+                System.out.println("[DEBUG] VarDef 节点占位，目前由 VarDecl 统一处理。未来支持数组 InitVal 时可能在此扩展。");
+                break;
+
             case "ConstDecl":
             case "VarDecl":
-                // 可以忽略，因为在 symbol 表中已记录
+                System.out.println("[DEBUG] 处理 VarDecl");
+
+                for (ASTNode varDef : node.getChildren()) {
+                    if (!"VarDef".equals(varDef.getType())) {
+                        continue; // 跳过非VarDef节点
+                    }
+
+                    ASTNode identNode = varDef.getChildren().get(0);
+                    varName = identNode.getValue();
+                    addr = getVarAddress(varName);
+                    System.out.println("[DEBUG][VarDecl] 变量名: " + varName + "，地址: " + addr);
+
+                    // 如果包含初始化（可能是等号后是 Exp 或 初始化列表）
+                    if (varDef.getChildren().size() > 1) {
+                        System.out.println("[DEBUG][VarDecl] 检测到初始化表达式，生成中间代码...");
+                        ASTNode initValNode = varDef.getChildren().get(varDef.getChildren().size() - 1);
+                        visit(initValNode); // visit InitVal / Exp / {...}
+                        emit(new PCode(PCode.OpCode.STO, 0, addr), varDef);
+                        System.out.println("[DEBUG][VarDecl] 已生成 STO 指令，将值存入变量地址 " + addr);
+                    }
+                }
                 break;
+
 
             case "Decl":
             case "BType":

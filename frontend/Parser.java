@@ -119,7 +119,10 @@ public class Parser {
     // CompUnit → {Decl} {FuncDef} MainFuncDef
     private void CompUnit() {
         while (isDecl()) {
-            Decl();
+            ASTNode node = Decl(); // 会自动 add 到 root 上（VarDecl/ConstDecl 会挂到 root）
+            if (node != null) {
+                root.addChild(node); // ✅ 现在由你统一挂载
+            }
         }
     
         // 🧠 添加一个新的 list 来暂存 FuncDef
@@ -150,14 +153,15 @@ public class Parser {
     }
 
     // Decl → ConstDecl | VarDecl
-    private void Decl() {
+    private ASTNode Decl() {
         if (isConstDecl()) {
-            ConstDecl();
+            return ConstDecl();
         } else if (isVarDecl()) {
-            VarDecl();
+            return VarDecl();
         } else {
             // 不可能到这里，报告错误
             reportError('k');
+            return null;
         }
     }
 
@@ -167,16 +171,26 @@ public class Parser {
     }
 
     // ConstDecl → 'const' BType ConstDef { ',' ConstDef } ';' // i
-    private void ConstDecl() {
+    private ASTNode ConstDecl() {
+        ASTNode constDeclNode = new ASTNode("ConstDecl");
+
         if (!match(TokenType.CONSTTK)) {
             reportError('k');
-            return;
+            return constDeclNode; // 返回空节点避免null
         }
         BType();
-        ConstDef();
-        while (match(TokenType.COMMA)) {
-            ConstDef();
+        ASTNode firstDef = ConstDef(); // 第一个 ConstDef
+        if (firstDef != null) {
+            constDeclNode.addChild(firstDef);
         }
+
+        while (match(TokenType.COMMA)) {
+            ASTNode nextDef = ConstDef();
+            if (nextDef != null) {
+                constDeclNode.addChild(nextDef);
+            }
+        }
+
         if (!match(TokenType.SEMICN)) {
             int errorLineNumber = previousToken != null ? previousToken.lineNumber : 1;
             reportError('i', errorLineNumber);
@@ -185,6 +199,7 @@ public class Parser {
         if (outputEnabled) {
             System.out.println("<ConstDecl>");
         }
+        return constDeclNode;
     }
 
     // 判断是否是变量声明
@@ -221,21 +236,29 @@ public class Parser {
     }
 
     // VarDecl → BType VarDef { ',' VarDef } ';' // i
-    private void VarDecl() {
+    private ASTNode VarDecl() {
+        ASTNode varDeclNode = new ASTNode("VarDecl"); // 🌟 构造 VarDecl 节点
+    
         BType();
-        VarDef();
+        ASTNode firstDef = VarDef(); // ✅ 修改为返回 VarDef 节点
+        varDeclNode.addChild(firstDef); // ✅ 添加第一个VarDef
+    
         while (match(TokenType.COMMA)) {
-            VarDef();
+            ASTNode moreDef = VarDef();
+            varDeclNode.addChild(moreDef);
         }
+    
         if (!match(TokenType.SEMICN)) {
             int errorLineNumber = previousToken != null ? previousToken.lineNumber : 1;
             reportError('i', errorLineNumber);
         }
-        // 输出 <VarDecl>
+
         if (outputEnabled) {
             System.out.println("<VarDecl>");
         }
+        return varDeclNode;
     }
+    
 
     // BType → 'int' | 'char'
     private void BType() {
@@ -249,67 +272,104 @@ public class Parser {
 
 
     // ConstExp → AddExp 注：使用的 Ident 必须是常量
-    private void ConstExp() {
-        AddExp();
-        // 输出 <ConstExp>
+    private ASTNode ConstExp() {
+        ASTNode constExpNode = new ASTNode("ConstExp");
+    
+        ASTNode addExpNode = AddExp();
+        if (addExpNode != null) {
+            constExpNode.addChild(addExpNode); // 👈 AddExp 挂上
+        }
+    
         if (outputEnabled) {
             System.out.println("<ConstExp>");
         }
+    
+        return constExpNode;
     }
-
+    
     // VarDef → Ident [ '[' ConstExp ']' ] | Ident [ '[' ConstExp ']' ] '=' InitVal // k
-    private void VarDef() {
+    private ASTNode VarDef() {
+        ASTNode varDefNode = new ASTNode("VarDef"); // 🌟新增，构造 VarDef 节点
         Token identToken = currentToken;
+    
         if (!match(TokenType.IDENFR)) {
             reportError('k');
-            return;
+            return varDefNode;
         }
-        String typeName = ""; // 类型名称
-        if (match(TokenType.LBRACK)) {
-            ConstExp();
-            if (!match(TokenType.RBRACK)) {
-                reportError('k');
-            }
-            typeName = currentBType.equals("int") ? "IntArray" : "CharArray";
-        } else {
-            typeName = currentBType.equals("int") ? "Int" : "Char";
-        }
+    
+        ASTNode identNode = new ASTNode(identToken); // 把 Ident 也挂进去
+        varDefNode.addChild(identNode); // ✅ 将 Ident 节点挂上去
+    
         if (match(TokenType.ASSIGN)) {
-            InitVal();
+            // 处理 InitVal → Exp
+            ASTNode initValNode = new ASTNode("InitVal"); // 包装为 InitVal 节点
+            ASTNode expNode = Exp(); // 解析右边表达式
+            initValNode.addChild(expNode); // InitVal → Exp
+            varDefNode.addChild(initValNode); // VarDef → Ident = InitVal
         }
-
-        // 检查符号重定义
+    
+        String typeName = currentBType.equals("int") ? "Int" : "Char";
         if (!currentScope.declare(new Symbol(identToken.value, typeName, currentScope.getScopeLevel()))) {
             reportError('b', identToken.lineNumber);
         }
+    
         if (outputEnabled) {
             System.out.println("<VarDef>");
         }
+
+        return varDefNode; // ✅ 返回这个节点
     }
+    
 
 
     // ConstDef → Ident [ '[' ConstExp ']' ] '=' ConstInitVal // k
-    private void ConstDef() {
+    private ASTNode ConstDef() {
+        ASTNode constDefNode = new ASTNode("ConstDef");
+
         Token identToken = currentToken;
         if (!match(TokenType.IDENFR)) {
             reportError('k');
-            return;
+            return constDefNode;
         }
+
+        // 添加 Ident 节点
+        ASTNode identNode = new ASTNode(identToken);
+        constDefNode.addChild(identNode);
+        
         String typeName = ""; // 类型名称
+
+        // 如果是数组
         if (match(TokenType.LBRACK)) {
-            ConstExp();
+            ASTNode lbrackNode = new ASTNode("LBRACK");
+            constDefNode.addChild(lbrackNode);
+
+            ASTNode constExpNode = ConstExp();
+
             if (!match(TokenType.RBRACK)) {
                 reportError('k');
+            } else {
+                ASTNode rbrackNode = new ASTNode("RBRACK");
+                constDefNode.addChild(rbrackNode);
             }
+
             typeName = currentBType.equals("int") ? "ConstIntArray" : "ConstCharArray";
         } else {
             typeName = currentBType.equals("int") ? "ConstInt" : "ConstChar";
         }
+
+        // 等号赋值
         if (!match(TokenType.ASSIGN)) {
             reportError('k');
-            return;
+            return constDefNode;
+        } else {
+            ASTNode assignNode = new ASTNode("ASSIGN");
+            constDefNode.addChild(assignNode);
         }
-        ConstInitVal();
+
+        ASTNode initValNode = ConstInitVal();
+        if (initValNode != null) {
+            constDefNode.addChild(initValNode);
+        }
 
         // 检查符号重定义
         if (!currentScope.declare(new Symbol(identToken.value, typeName, currentScope.getScopeLevel()))) {
@@ -318,31 +378,63 @@ public class Parser {
         if (outputEnabled) {
             System.out.println("<ConstDef>");
         }
+
+        return constDefNode;
     }
 
 
     // ConstInitVal → ConstExp | '{' [ ConstExp { ',' ConstExp } ] '}' | StringConst
-    private void ConstInitVal() {
+    private ASTNode ConstInitVal() {
+        ASTNode initValNode = new ASTNode("ConstInitVal");
+    
         if (match(TokenType.LBRACE)) {
-            if (!match(TokenType.RBRACE)) {
-                ConstExp();
-                while (match(TokenType.COMMA)) {
-                    ConstExp();
+            initValNode.addChild(new ASTNode("LBRACE"));
+    
+            if (!check(TokenType.RBRACE)) {
+                ASTNode firstExp = ConstExp();
+                if (firstExp != null) {
+                    initValNode.addChild(firstExp);
                 }
+    
+                while (match(TokenType.COMMA)) {
+                    initValNode.addChild(new ASTNode("COMMA"));
+                    ASTNode moreExp = ConstExp();
+                    if (moreExp != null) {
+                        initValNode.addChild(moreExp);
+                    }
+                }
+    
                 if (!match(TokenType.RBRACE)) {
                     reportError('k');
+                } else {
+                    initValNode.addChild(new ASTNode("RBRACE"));
                 }
+            } else {
+                // 空初始化 {}
+                match(TokenType.RBRACE);
+                initValNode.addChild(new ASTNode("RBRACE"));
             }
-        } else if (currentToken != null && currentToken.type == TokenType.STRCON) {
-            match(TokenType.STRCON);
-        } else {
-            ConstExp();
         }
-        // 输出 <ConstInitVal>
+        else if (currentToken != null && currentToken.type == TokenType.STRCON) {
+            Token strToken = currentToken;
+            match(TokenType.STRCON);
+            ASTNode strNode = new ASTNode(strToken);
+            initValNode.addChild(strNode);
+        }
+        else {
+            ASTNode constExpNode = ConstExp();
+            if (constExpNode != null) {
+                initValNode.addChild(constExpNode);
+            }
+        }
+    
         if (outputEnabled) {
             System.out.println("<ConstInitVal>");
         }
+    
+        return initValNode;
     }
+    
 
     // InitVal → Exp | '{' [ Exp { ',' Exp } ] '}' | StringConst
     private void InitVal() {
@@ -674,8 +766,8 @@ public class Parser {
 
     private ASTNode BlockItem() {
         if (isDecl()) {
-            Decl();
-            return null;  // 声明不需要生成中间代码
+            ASTNode declNode = Decl();
+            return declNode;  // 声明不需要生成中间代码
         } else if (isStmt()) {
             return Stmt();  // 返回语句节点
         }
