@@ -5,7 +5,9 @@ import java.util.*;
 
 public class PCodeExecutor {
     private List<PCode> instructions;
-    private int[] memory = new int[100]; // 简易内存模拟变量区
+    private int[] memory = new int[2000]; // 假设内存大小为 2000
+    // memory[0..999]局部，memory[1000..]为全局
+
     // private Stack<Integer> stack = new Stack<>();
     // 控制栈（专用于 CALL/RET 保存返回地址）
     private Stack<StackFrame> callStack = new Stack<>();
@@ -111,7 +113,7 @@ public class PCodeExecutor {
                         break;
 
                     case LOD:
-                        int loadAddr = bp + inst.getAddress();
+                        int loadAddr = base(inst.getLevel()) + inst.getAddress();
                         if (loadAddr < 0 || loadAddr >= memory.length) {
                             System.err.println("[ERROR] LOD: 无效内存地址 " + loadAddr);
                             throw new RuntimeException("Invalid memory address for LOD: " + loadAddr);
@@ -127,7 +129,7 @@ public class PCodeExecutor {
                             throw new RuntimeException("Stack underflow on STO");
                         }
                         int valueToStore = dataStack.pop();
-                        int storeAddr = bp + inst.getAddress();
+                        int storeAddr = base(inst.getLevel()) + inst.getAddress();
                          if (storeAddr < 0 || storeAddr >= memory.length) {
                             System.err.println("[ERROR] STO: 无效内存地址 " + storeAddr);
                             dataStack.push(valueToStore); // 恢复栈状态
@@ -275,8 +277,9 @@ public class PCodeExecutor {
                         if (dataStack.isEmpty()) throw new RuntimeException("Stack underflow on PRINT");
                         int valueToPrint = dataStack.pop();
                         System.out.println("[OUTPUT] " + valueToPrint); // ✅ 打印到控制台
-                        writer.write(valueToPrint + "\n"); // ✅ 写入 pcoderesult.txt
-                        System.out.println("[DEBUG] PRINT: 输出值 " + valueToPrint + ". 栈: " + dataStack);
+                        writer.write(String.valueOf(valueToPrint)); // Write to file
+                        writer.flush(); // <-- Add flush to ensure content is written immediately
+                        System.out.println("[DEBUG] PRINTSTR: 输出字符串 \"" + String.valueOf(valueToPrint) + "\". 栈: " + dataStack);
                         break;
                     
                     case PRINTSTR:
@@ -319,7 +322,7 @@ public class PCodeExecutor {
                     
                         String finalOutput = sb.toString();
                         System.out.println("[OUTPUT] " + finalOutput);
-                        writer.write(finalOutput+ "\n");
+                        writer.write(finalOutput);
                         break;                    
 
                     case READ:
@@ -380,37 +383,55 @@ public class PCodeExecutor {
                         // 如果栈不为空，弹出返回地址并继续执行
                         // pc = returnAddr;
                         continue;
+                    case PCode.OpCode.INT:
+                        int frameSize = inst.getAddress();
+                        sp = bp + frameSize; // Allocate frame space by setting SP
+                        System.out.println("[DEBUG] INT: Allocated frame size " + frameSize + ". New SP = " + sp);
+                        break;
 
                     case CALL:
-                        System.out.println("[DEBUG] 当前执行 CALL 的 PC 是: " + currentPC);    
-                        // 保存返回地址（下一条指令的地址）
-                        int returnAddr = currentPC + 1; // ✅ 当前指令的下一条才是要返回的地方
-                        // callStack.push(returnAddr);
-                        // 保存当前帧的 base
-                        callStack.push(new StackFrame(returnAddr, bp));  // ✅ 保存返回地址和当前bp
-                        bp = sp;                // ✅ 切换 base 为当前可用区域
-                        sp += 10;               // ✅ 假设每个函数最多需要10个变量空间（你可换成动态计算）
+                        int levelDiffCall = inst.getLevel();
+                        int entryAddrCall = inst.getAddress();
+                        int paramCountCall = inst.getParamCount(); // 获取参数个数
+                        System.out.println("[DEBUG] CALL: levelDiff=" + levelDiffCall + ", entryAddr=" + entryAddrCall + ", params=" + paramCountCall);
 
-                        // if (!hasLoggedCall) {
-                        //     System.out.println("======== 💥 DEBUG 断点触发 💥 ========");
-                        //     System.out.println("[DEBUG] 当前 PC = " + pc);
-                        //     System.out.println("[DEBUG] CALL 指令地址 = " + inst.getAddress());
-                        //     System.out.println("[DEBUG] CALL 实际压入的返回地址: " + (pc + 1));
-                        //     System.out.println("[DEBUG] 栈当前状态: " + stack);
-                        //     hasLoggedCall = true; // ✅ 保证只打印一次
+                        // 1. 计算静态链 (Static Link)
+                        int staticLink = base(levelDiffCall); // Use levelDiffCall declared above
+                        System.out.println("[DEBUG] CALL: Calculated Static Link = " + staticLink);
+
+                        // Push new stack frame onto callStack
+                        callStack.push(new StackFrame(currentPC + 1, bp)); // Save return address and old bp
+                        System.out.println("[DEBUG] CALL: Pushed StackFrame(ret=" + (currentPC + 1) + ", base=" + bp + ") onto callStack. Stack: " + callStack);
+
+                        // 2. 保存调用信息到新栈帧的开头 (内存中)
+                        // 新帧的基址将是当前的 sp
+                        int newBp = sp;
+                        // 动态扩容检查 (确保有空间存放 SL, DL, RA)
+                        if (newBp + 3 > memory.length) {
+                            int newSize = Math.max(memory.length * 2, newBp + 10);
+                            int[] newMem = new int[newSize];
+                            System.arraycopy(memory, 0, newMem, 0, memory.length);
+                            memory = newMem;
+                            System.out.println("[DEBUG] CALL: memory 扩容至 " + newSize);
+                        }
+                        memory[newBp + 0] = staticLink;       // 保存 Static Link (SL)
+                        memory[newBp + 1] = bp;               // 保存 Dynamic Link (DL) - a.k.a. old BP
+                        memory[newBp + 2] = pc;               // 保存 Return Address (RA) - PC already points to next instruction
+                        System.out.println("[DEBUG] CALL: Saving SL=" + staticLink + ", DL=" + bp + ", RA=" + pc + " at memory[" + newBp + "..." + (newBp + 2) + "]");
+
+                        // 3. 更新基址寄存器 (BP)
+                        bp = newBp;
+                        System.out.println("[DEBUG] CALL: Updated BP = " + bp);
+
+                        // 4. 跳转到函数入口
+                        pc = entryAddrCall;
+                        System.out.println("[DEBUG] CALL: Jumping to function entry PC = " + pc);
                         
-                        //     // 💣 关键一招：终止程序
-                        //     System.out.println("💥 程序在第一次 CALL 时终止，退出分析！");
-                        //     return; // ✅ 直接终止解释器执行！
-                        // }
-
-                        // stack.push(currentPC + 1); // ✅ 先自增，再压栈
-                        // 跳转到函数入口
-                        // ✅ 跳转到函数入口地址（inst.getAddress() 是 CALL 指令携带的跳转目标）
-                        pc = inst.getAddress(); // 函数入口
-                        System.out.println("[DEBUG] CALL: 跳转到函数入口地址 " + pc);
-                        printStackStatus();
-                        continue; // 跳过 pc++
+                        // 注意：SP 的更新由函数入口的 INT 指令负责 (sp = bp + frameSize)
+                        // 参数传递：参数已由调用者压入 dataStack，被调用函数通过 LOD 0, offset (offset >= 3) 访问
+                        // 不需要在这里从 dataStack 弹出参数到 memory
+                        printStackStatus(); // 打印状态以便调试
+                        continue; // 跳过默认的 pc++
 
                     case POP:
                         if (dataStack.isEmpty()) {
@@ -447,6 +468,19 @@ public class PCodeExecutor {
                 try { writer.close(); } catch (IOException ioex) { /* ignore */ }
             }
         }
+    }
+
+
+    private int base(int levelDiff) {
+        if (levelDiff == -1) {
+            return 1000; // 全局变量的起始地址
+        }
+        int b = bp;
+        while (levelDiff > 0) {
+            b = memory[b]; // 靠 static link 回溯上层帧
+            levelDiff--;
+        }
+        return b;
     }
 
     // ✅ 统一调试输出函数

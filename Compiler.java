@@ -21,8 +21,8 @@ public class Compiler {
 
         // 收集错误
         List<Error> errors = lexer.errors;
-        Parser parser = new Parser(tokens, errors, lexer.errorLines);
-
+        CodeGenerator codeGenerator = new CodeGenerator();
+        Parser parser = new Parser(tokens, errors, lexer.errorLines, codeGenerator);
         System.out.println("Step 2: 开始语法分析...");
         ASTNode ast = parser.parse(); // ← parse 现在有返回值
         System.out.println(ast);
@@ -63,8 +63,8 @@ public class Compiler {
 
             // 生成中间代码
             System.out.println("Step 3: 生成中间代码...");
-            CodeGenerator codeGen = new CodeGenerator();
-            List<PCode> pcodes = codeGen.generate(ast);
+            // CodeGenerator codeGen = new CodeGenerator();
+            List<PCode> pcodes = codeGenerator.generate(ast);
             System.out.println("中间代码生成完成，指令数: " + pcodes.size());
 
             // 写入 pcode.txt
@@ -84,7 +84,7 @@ public class Compiler {
             PCodeExecutor executor = new PCodeExecutor(pcodes);
 
             // ✅ 添加这段代码：
-            Integer entry = codeGen.funcEntryMap.get("main");
+            Integer entry = codeGenerator.funcEntryMap.get("main");
             if (entry == null) throw new RuntimeException("没有找到 main 函数的入口地址！");
             executor.setPC(entry);
             

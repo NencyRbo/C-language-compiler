@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.Set;
 
 public class Parser {
+    private CodeGenerator codeGenerator;
     private List<Token> tokens; // 词法单元列表
     private int index = 0; // 当前解析位置
     private Token currentToken; // 当前词法单元
@@ -24,10 +25,15 @@ public class Parser {
     private boolean hasSyntaxErrorInCurrentFunc = false; // 新增：当前函数体内是否存在语法错误
     private ASTNode root = new ASTNode("Program");
 
-    public Parser(List<Token> tokens, List<Error> errors, Set<Integer> errorLines) {
+    // 移除 globalOffset 和 localOffset，这些应由 CodeGenerator 管理
+    // private int globalOffset = 0; // ✅ 全局变量地址偏移
+    // private int localOffset = 0;  // ✅ 函数内变量地址偏移
+
+    public Parser(List<Token> tokens, List<Error> errors, Set<Integer> errorLines,CodeGenerator codeGenerator) {
         this.tokens = tokens;
         this.errors = errors;
         this.errorLines = errorLines; // 使用共享的 errorLines 集合
+        this.codeGenerator = codeGenerator;
         this.currentScope = new Scope(null, scopeCounter); // 初始化全局作用域
         if (!tokens.isEmpty()) {
             currentToken = tokens.get(index);
@@ -178,7 +184,8 @@ public class Parser {
             reportError('k');
             return constDeclNode; // 返回空节点避免null
         }
-        BType();
+        BType(); // 会设置 currentBType（"int"/"char"）
+
         ASTNode firstDef = ConstDef(); // 第一个 ConstDef
         if (firstDef != null) {
             constDeclNode.addChild(firstDef);
@@ -199,6 +206,7 @@ public class Parser {
         if (outputEnabled) {
             System.out.println("<ConstDecl>");
         }
+        System.out.println("🚧 ConstDecl 子节点数量: " + constDeclNode.getChildren().size());
         return constDeclNode;
     }
 
@@ -309,9 +317,25 @@ public class Parser {
         }
     
         String typeName = currentBType.equals("int") ? "Int" : "Char";
-        if (!currentScope.declare(new Symbol(identToken.value, typeName, currentScope.getScopeLevel()))) {
+        Symbol symbol = new Symbol(identToken.value, typeName, currentScope.getScopeLevel());
+        if (currentScope.getScopeLevel() == 1) { // 🚨 全局变量标记 level = -1
+            symbol.level = -1; // ✅ 全局变量，level=-1 表示在 PCode 中为 globalBase
+        }
+
+        // 移除偏移量计算和对 CodeGenerator 的注册调用，这些由 CodeGenerator 在遍历 AST 时处理
+        // if (symbol.level == -1) {
+        //     symbol.offset = globalOffset++;
+        // } else {
+        //     symbol.offset = localOffset++;
+        // }
+        // codeGenerator.registerSymbol(symbol); // 移除
+
+        // 保留 Parser 级别的作用域检查
+        if (!currentScope.declare(symbol)) {
             reportError('b', identToken.lineNumber);
         }
+        System.out.println("VarDef: " + identToken.value + " declared in scope " + currentScope.getScopeLevel());
+
     
         if (outputEnabled) {
             System.out.println("<VarDef>");
@@ -364,17 +388,41 @@ public class Parser {
         } else {
             ASTNode assignNode = new ASTNode("ASSIGN");
             constDefNode.addChild(assignNode);
+
+            ASTNode initValNode = ConstInitVal(); // 解析 ConstInitVal
+            if (initValNode!= null) {
+                constDefNode.addChild(initValNode); // 挂到 ConstDef 上
+            } else {
+                // 如果 ConstInitVal 返回 null，可能表示解析失败，也应考虑报错
+                reportError('k'); // 或其他错误码
+            }
         }
 
-        ASTNode initValNode = ConstInitVal();
-        if (initValNode != null) {
-            constDefNode.addChild(initValNode);
-        }
+        // ASTNode initValNode = ConstInitVal();
+        // if (initValNode != null) {
+        //     constDefNode.addChild(initValNode);
+        // }
 
         // 检查符号重定义
-        if (!currentScope.declare(new Symbol(identToken.value, typeName, currentScope.getScopeLevel()))) {
+        Symbol symbol = new Symbol(identToken.value, typeName, currentScope.getScopeLevel());
+        if (currentScope.getScopeLevel() == 1) { // 🚨 全局作用域
+            symbol.level = -1; // ✅ 全局变量，level=-1 表示在 PCode 中为 globalBase
+        }
+
+        // 移除偏移量计算和对 CodeGenerator 的注册调用，这些由 CodeGenerator 在遍历 AST 时处理
+        // if (symbol.level == -1) {
+        //     symbol.offset = globalOffset++;
+        // } else {
+        //     symbol.offset = localOffset++;
+        // }
+        // codeGenerator.registerSymbol(symbol); // 移除
+
+        // 保留 Parser 级别的作用域检查
+        if (!currentScope.declare(symbol)) {
             reportError('b', identToken.lineNumber);
         }
+        System.out.println("ConstDef: " + identToken.value + " declared in scope " + currentScope.getScopeLevel());
+        
         if (outputEnabled) {
             System.out.println("<ConstDef>");
         }
@@ -551,6 +599,8 @@ public class Parser {
         
         // 🧶 不管有没有参数，都先建一个参数列表节点，方便统一结构处理
         enterScope(); // 🚪 进入函数体作用域，参数变量应该注册在函数内部作用域中
+        int localOffset = 0; // ✅ 每个函数体 offset 从 0 开始
+        System.out.println("[DEBUG][FuncDef] 进入函数体作用域，localOffset 重置为 0");
         System.out.println("[DEBUG][FuncDef] 进入新的函数作用域，scope id = " + currentScope.getScopeLevel());
     
         if (match(TokenType.RPARENT)) {
@@ -720,6 +770,8 @@ public class Parser {
                     reportError('j', funcNameToken.lineNumber);
                 }
                 enterScope(); // 🚪 主函数体作为一个新的作用域
+                int localOffset = 0; // ✅ 每个函数体 offset 从 0 开始
+                System.out.println("[DEBUG][MainFuncDef] 进入主函数作用域，localOffset 重置为 0");
 
                 ASTNode mainNode = new ASTNode("MainFuncDef");
                 mainNode.setSource("Parser.MainFuncDef() @ line " + currentToken.lineNumber);
@@ -757,7 +809,7 @@ public class Parser {
                 }
             }
             exitScope();  // ✅ 退出作用域！
-            
+
             if (!match(TokenType.RBRACE)) {
                 reportError('j');
             }

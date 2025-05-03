@@ -11,13 +11,18 @@ import java.util.HashMap;
 
 public class CodeGenerator {
     private List<PCode> codeList = new ArrayList<>();
-    private Map<String, Integer> varAddressMap = new HashMap<>(); // 用于变量寻址
+    private List<PCode> globalInitCodeList = new ArrayList<>(); // <-- 新增：存储全局初始化指令
+    // private Map<String, Integer> varAddressMap = new HashMap<>(); // 用于变量寻址
+    private Stack<Map<String, Symbol>> symbolTableStack = new Stack<>(); // ✅ 作用域栈
+    private Map<String, Symbol> globalSymbolTable = new HashMap<>(); // ✅ 全局符号表
+    
     public Map<String, Integer> funcEntryMap = new HashMap<>(); // 函数名到入口地址的映射
-    private int nextVarAddress = 0; // 下一个可用的变量地址
+    // private int nextVarAddress = 0; // 下一个可用的变量地址
     // ✅ 全局字符串池
     private Map<String, Integer> stringTable = new HashMap<>();
     public static List<String> stringPool = new ArrayList<>();
     private Map<Integer, Integer> labelAddressMap = new HashMap<>(); // if和for用的回填地址表
+    private boolean isGeneratingGlobalInit = false; // <-- 新增：标记是否正在生成全局初始化代码
 
     // 你的原有变量...
     // private List<PCode> pcodeList = new ArrayList<>();
@@ -26,6 +31,32 @@ public class CodeGenerator {
     private Stack<Integer> exitLabelStack = new Stack<>();
     private Stack<Integer> stepLabelStack = new Stack<>();
 
+    // 全局变量的层级，假设为 -1
+    public static final int GLOBAL_LEVEL = -1;
+
+    public void registerSymbol(Symbol symbol) {
+        if (symbol.level == GLOBAL_LEVEL) {
+            if (globalSymbolTable.containsKey(symbol.name)) {
+                System.err.println("[WARN] 全局符号 '" + symbol.name + "' 已存在，将被覆盖！");
+            }
+            globalSymbolTable.put(symbol.name, symbol);
+            System.out.println("[DEBUG] 注册全局符号: " + symbol.name +
+                ", level=" + symbol.level +
+                ", offset=" + symbol.offset);
+        } else {
+            if (symbolTableStack.isEmpty()) {
+                throw new RuntimeException("错误：尝试在没有局部作用域的情况下注册局部符号 '" + symbol.name + "'");
+            }
+            Map<String, Symbol> currentScope = symbolTableStack.peek();
+            if (currentScope.containsKey(symbol.name)) {
+                System.err.println("[WARN] 当前作用域已存在符号 '" + symbol.name + "'，将被覆盖！");
+            }
+            currentScope.put(symbol.name, symbol);
+            System.out.println("[DEBUG] 注册局部符号: " + symbol.name +
+                ", level=" + symbol.level +
+                ", offset=" + symbol.offset + " 到当前作用域");
+        }
+    }
 
     public List<PCode> generate(ASTNode node) {
         System.out.println("[DEBUG] CodeGenerator: 开始生成中间代码");
@@ -61,8 +92,32 @@ public class CodeGenerator {
     private void emit(PCode inst, ASTNode node) {
         System.out.println("[PCode-DEBUG] 添加指令: " + inst + "  来自节点: " + node.getType() + 
             (node.getValue() != null ? ", 值: " + node.getValue() : ""));
-        codeList.add(inst);
+        if (isGeneratingGlobalInit) { // <-- 修改：根据标记决定添加到哪个列表
+            globalInitCodeList.add(inst);
+        } else {
+            codeList.add(inst);
+        }
     }    
+
+    private Symbol getSymbol(String varName) {
+        // 1. 从栈顶向栈底查找局部作用域
+        for (int i = symbolTableStack.size() - 1; i >= 0; i--) {
+            Map<String, Symbol> scope = symbolTableStack.get(i);
+            if (scope.containsKey(varName)) {
+                System.out.println("[DEBUG] 在作用域栈 level " + i + " 找到符号: " + varName);
+                return scope.get(varName);
+            }
+        }
+
+        // 2. 如果局部作用域都找不到，查找全局作用域
+        if (globalSymbolTable.containsKey(varName)) {
+            System.out.println("[DEBUG] 在全局作用域找到符号: " + varName);
+            return globalSymbolTable.get(varName);
+        }
+
+        // 3. 如果全局也找不到，则抛出错误
+        throw new RuntimeException("变量未定义或在当前作用域不可见: " + varName);
+    }
 
     private void visit(ASTNode node) {
         if (node == null) return;
@@ -74,6 +129,12 @@ public class CodeGenerator {
             // CompUnit → {Decl} {FuncDef} MainFuncDef
             // CompUnit 是所有顶层声明（变量 + 函数 + 主函数）的总包装节点，相当于程序的根节点（Program）
             case "CompUnit":
+                // 初始化符号表栈，压入一个空的全局基础作用域（全局变量实际存储在 globalSymbolTable）
+                symbolTableStack.clear();
+                globalSymbolTable.clear();
+                symbolTableStack.push(new HashMap<>()); // 压入一个基础作用域
+                System.out.println("[DEBUG] 初始化符号表栈和全局符号表");
+
                 ASTNode mainFunc = null;
                 List<ASTNode> funcDefs = new ArrayList<>();
 
@@ -93,8 +154,10 @@ public class CodeGenerator {
                             System.out.println("[DEBUG] 捕获主函数 MainFuncDef");
                         }
                     } else {
-                        System.out.println("[DEBUG] 处理声明节点 Decl");
+                        System.out.println("[DEBUG] 处理全局声明节点 Decl");
+                        isGeneratingGlobalInit = true; // <-- 设置标记
                         visit(child);
+                        isGeneratingGlobalInit = false; // <-- 清除标记
                     }
                 }
 
@@ -115,26 +178,38 @@ public class CodeGenerator {
 
 
             case "Block":
-            System.out.println("[DEBUG] 处理 Block（交错顺序遍历语句与变量声明）");
+                System.out.println("[DEBUG] 进入 Block 作用域");
+                symbolTableStack.push(new HashMap<>()); // 进入新作用域
+                System.out.println("[DEBUG] 处理 Block（交错顺序遍历语句与变量声明）");
                 for (ASTNode child : node.getChildren()) {
                     System.out.println("[DEBUG] 遍历子节点: " + child.getType());
                     visit(child);
                 }
+                symbolTableStack.pop(); // 退出作用域
+                System.out.println("[DEBUG] 退出 Block 作用域");
                 break;
 
             case "MainFuncDef":
                 String mainName = "main";
                 int entryAddr_MainFunc = codeList.size();
-                funcEntryMap.put(mainName, entryAddr_MainFunc); // ✅明确写入 "main" 的入口地址
+                funcEntryMap.put(mainName, entryAddr_MainFunc); // ✅ 记录 "main" 的入口地址（包含全局初始化）
                 System.out.println("[DEBUG] 记录函数 'main' 的入口地址: " + entryAddr_MainFunc);
+
+                // <-- 新增：在 main 函数代码前插入全局初始化指令
+                System.out.println("[DEBUG] 在 main 函数前插入全局初始化指令，共 " + globalInitCodeList.size() + " 条");
+                codeList.addAll(globalInitCodeList);
+                // <-- 结束新增
                 
                 System.out.println("[DEBUG] 进入主函数定义");
+                symbolTableStack.push(new HashMap<>()); // 进入 main 函数作用域
                 // 访问 MainFuncDef 的 Block 子节点
                 for (ASTNode child : node.getChildren()) {
                     if (child.getType().equals("Block")) {
                         visit(child);
                     }
                 }
+                symbolTableStack.pop(); // 退出 main 函数作用域
+                System.out.println("[DEBUG] 退出 main 函数作用域");
                 // Main 函数结束后添加 RET 指令
                 System.out.println("[DEBUG] 主函数结束，添加 RET 指令");
                 if (codeList.isEmpty() || codeList.get(codeList.size() - 1).getOp() != PCode.OpCode.RET) {
@@ -179,6 +254,15 @@ public class CodeGenerator {
                 // put 到 funcEntryMap 中，记录入口地址
                 funcEntryMap.put(funcName, entryAddr);
                 System.out.println("[DEBUG] 记录函数 '" + funcName + "' 的入口地址: " + entryAddr);
+                // Register the function name itself as a global symbol
+                System.out.println("[DEBUG][FuncDef] Creating symbol for function '" + funcName + "'");
+                Symbol funcSymbol = new Symbol(funcName, "function", GLOBAL_LEVEL); // Functions are global
+                // funcSymbol.offset = entryAddr; // Let's not store address in offset for now, might conflict
+                registerSymbol(funcSymbol); // Register in globalSymbolTable
+                System.out.println("[DEBUG][FuncDef] Registered function symbol '" + funcName + "' globally.");
+                
+                System.out.println("[DEBUG] 进入函数 '" + funcName + "' 作用域");
+                symbolTableStack.push(new HashMap<>()); // 进入函数作用域
                 
                 // 然后继续访问函数体
                 // boolean insertedParamCopy = false;
@@ -219,29 +303,41 @@ public class CodeGenerator {
                 // 如果有形参列表，处理形参
                 if (funcFParamsNode != null) {
                     System.out.println("[DEBUG][FuncDef] 开始处理函数形参");
-
+                
                     int paramIndex = 0;
                     for (ASTNode paramNode : funcFParamsNode.getChildren()) {
                         if (paramNode.getChildren().size() > 0) {
-                            ASTNode identNode = paramNode.getChildren().get(0); // 取FuncFParam的孩子
+                            ASTNode identNode = paramNode.getChildren().get(0);
                             String paramName = identNode.getValue();
-                            int addr = getVarAddress(paramName);
-                    
-                            System.out.println("[DEBUG][FuncFParams] 处理形参 '" + paramName + "'，分配地址 " + addr);
-                    
-                            emit(new PCode(PCode.OpCode.LOD, 0, paramIndex), node);
-                            System.out.println("[DEBUG][FuncFParams] 生成 LOD 指令，加载第 " + paramIndex + " 个参数");
-                    
-                            emit(new PCode(PCode.OpCode.STO, 0, addr), node);
-                            System.out.println("[DEBUG][FuncFParams] 生成 STO 指令，存到地址 " + addr);
-                    
+                            System.out.println("[DEBUG][FuncDef] 处理形参 '" + paramName + "'");
+                
+                            // ✅ 构造 Symbol 对象（必须！）
+                            // 参数的层级是当前函数的层级，即 0 (相对于全局-1)
+                            Symbol sym = new Symbol(paramName, "int", 0); 
+                            // 参数在栈帧中的偏移量，需要跳过 SL, DL, RA (假设它们占3个位置)
+                            sym.offset = paramIndex + 3; 
+                            System.out.println("[DEBUG][FuncDef] 构造形参 Symbol: name=" + sym.name + ", type=" + sym.type + ", level=" + sym.level + ", offset=" + sym.offset);
+
+                            sym.isParam = true; // 形参注册处设置为 true
+                
+                            // ✅ 注册 symbol（关键！）
+                            registerSymbol(sym);
+                            System.out.println("[DEBUG][FuncDef] 注册形参 '" + paramName + "' 到 symbol 表");
+                
+                            // ✅ 生成 STO 指令，将调用者压入数据栈的参数值弹出，并存入当前函数栈帧的正确偏移量位置
+                            // STO 的 level 是 0，因为是存储到当前活动记录（栈帧）中
+                            emit(new PCode(PCode.OpCode.STO, 0, sym.offset), node);
+                            System.out.println("[DEBUG][FuncDef] 生成 STO 指令: 将栈顶参数存入内存地址 bp + " + sym.offset + " (对应形参 '" + sym.name + "')");
+                
+                            // System.out.println("[DEBUG][FuncFParams] 注册并处理形参 '" + paramName + "', level=" + sym.level + ", offset=" + sym.offset);
+                
                             paramIndex++;
                         }
                     }
-
+                
                     System.out.println("[DEBUG][FuncFParams] 所有形参处理完毕");
-
-                } else {
+                }
+                 else {
                     System.out.println("[DEBUG][FuncDef] 没有形参列表，跳过参数处理");
                 }
 
@@ -265,6 +361,8 @@ public class CodeGenerator {
                 } else {
                     System.out.println("[DEBUG][FuncDef] 函数末尾已有RET指令，无需补充");
                 }
+                symbolTableStack.pop(); // 退出函数作用域
+                System.out.println("[DEBUG] 退出函数 '" + funcName + "' 作用域");
                 break;
 
             case "PrimaryExp":
@@ -275,11 +373,26 @@ public class CodeGenerator {
                 break;
 
             case "IDENFR":
+                System.out.println("[DEBUG] 处理 IDENFR 节点");
                 // 标识符节点，加载变量值
                 String varName = node.getValue();
-                int addr = getVarAddress(varName);
-                System.out.println("[DEBUG] 生成 LOD 指令: 加载变量 " + varName + " (地址 " + addr + ")");
-                emit(new PCode(PCode.OpCode.LOD, 0, addr), node);
+                System.out.println("[DEBUG] 处理标识符: " + varName);
+                // int addr = getVarAddress(varName);
+                Symbol sym = getSymbol(varName);
+                System.out.println("[DEBUG] 标识符 '" + varName + "' 的地址: " + sym.offset);
+                System.out.println("[DEBUG] 生成 LOD 指令: 加载变量 " + varName + " (地址 " + sym.offset + ")");
+                // emit(new PCode(OpCode.LOD, sym.level, sym.offset + (sym.isParam ? 1 : 0)), node);
+
+                int finalOffset = sym.offset;
+                System.out.println("[DEBUG] 标识符 '" + varName + "' 的最终偏移量: " + finalOffset);
+                // // 仅当符号是局部变量 (level != -1) 且是参数 (isParam) 时，才将偏移量加 1
+                // if (sym.level != GLOBAL_LEVEL && sym.isParam) { 
+                //     finalOffset += 1;
+                // }
+                System.out.println("[DEBUG] 标识符 '" + varName + "' 的最终偏移量 (考虑参数): " + finalOffset);
+                emit(new PCode(OpCode.LOD, sym.level, finalOffset), node);
+                System.out.println("[DEBUG] 生成 LOD 指令: 加载变量 " + varName + " (地址 " + finalOffset + ")");
+
                 break;
 
             case "STRCON":
@@ -300,26 +413,175 @@ public class CodeGenerator {
                 break;
 
             case "ConstDecl":
+                System.out.println("[DEBUG] Processing ConstDecl node");
+                // 一个 ConstDecl 节点包含一个或多个 ConstDef 子节点
+                for (ASTNode constDefNode : node.getChildren()) {
+                    // 确保当前处理的是 ConstDef 节点
+                    if (!"ConstDef".equals(constDefNode.getType())) {
+                        System.err.println("[WARN] Skipping unexpected child type under ConstDecl: " + constDefNode.getType());
+                        continue;
+                    }
+                    System.out.println("[DEBUG] Processing ConstDef child node");
+            
+                    ASTNode identNode = null;
+                    ASTNode constInitValNode = null;
+            
+                    // 在 ConstDef 节点中查找标识符 (IDENFR) 和常量初始值 (ConstInitVal) 节点
+                    for (ASTNode child : constDefNode.getChildren()) {
+                        // 检查节点是否为标识符 Token
+                        if (child.getToken() != null && child.getToken().type == TokenType.IDENFR) {
+                            identNode = child;
+                        }
+                        // 检查节点是否为常量初始值
+                        else if ("ConstInitVal".equals(child.getType())) {
+                            constInitValNode = child;
+                        }
+                    }
+            
+                    // 检查是否成功找到了标识符和初始值节点
+                    if (identNode == null || constInitValNode == null) {
+                        System.err.println("[ERROR] Malformed ConstDef node: Missing Identifier or ConstInitVal. Skipping.");
+                        continue;
+                    }
+            
+                    String constName = identNode.getValue();
+                    System.out.println("[DEBUG] Found constant definition for: " + constName);
+            
+                    // --- 关键步骤 1: 计算常量值 --- 
+                    // 访问 ConstInitVal 节点。这应该递归地触发对其子节点 (ConstExp -> AddExp -> ... -> Number) 的访问，
+                    // 最终目的是在 PCode 虚拟机的栈顶留下计算好的常量值。
+                    // **请确保 ConstInitVal, ConstExp, AddExp, Number 等节点的 visit 方法能正确求值并将结果压栈**
+                    System.out.println("[DEBUG] Visiting ConstInitVal to compute value for " + constName);
+                    visit(constInitValNode); 
+                    // 假设执行完 visit(constInitValNode) 后，常量值已经在栈顶
+            
+                    // --- 关键步骤 2: 注册符号并获取信息 --- 
+                    // 检查符号是否已在全局表中定义 (常量只能在全局定义)
+                    if (globalSymbolTable.containsKey(constName)) {
+                        System.err.println("[ERROR] 全局常量 '" + constName + "' 重复定义！");
+                        // 弹出已计算的值，避免影响后续指令
+                        // emit(new PCode(PCode.OpCode.POP, 0, 1), identNode); // 假设有 POP 指令
+                        continue; // 跳过此常量
+                    }
+                    // Determine level and offset based on stack state
+                    int currentLevelConst;
+                    int offsetConst;
+                    if (symbolTableStack.isEmpty()) { // Expect stack to be empty for globals
+                        currentLevelConst = GLOBAL_LEVEL; // -1
+                        offsetConst = globalSymbolTable.size(); // Global offset
+                    } else {
+                        // This case shouldn't happen for 'const' in this grammar
+                        System.err.println("[ERROR] Unexpected non-empty stack during ConstDef for " + constName);
+                        currentLevelConst = GLOBAL_LEVEL; // Fallback to global
+                        offsetConst = globalSymbolTable.size();
+                    }
+
+                    // 创建并注册新的全局常量符号
+                    Symbol symNew = new Symbol(constName, "const", currentLevelConst); // Use calculated level
+                    symNew.offset = offsetConst; // Use calculated offset
+                    symNew.isConst = true; // Mark as constant
+                    registerSymbol(symNew); // 注册符号
+                    System.out.println("[DEBUG] Registered global constant: " + constName + ": level=" + symNew.level + ", offset=" + symNew.offset);
+                    
+                    // --- 关键步骤 3: 生成存储指令 --- 
+                    System.out.println("[DEBUG] Emitting STO instruction for " + constName + " at level " + symNew.level + ", offset " + symNew.offset);
+                    emit(new PCode(PCode.OpCode.STO, symNew.level, symNew.offset), constDefNode);
+            
+                    System.out.println("[DEBUG] Finished processing definition for constant: " + constName);
+                }
+                System.out.println("[DEBUG] Finished processing ConstDecl node");
+                break;
+            
+            
+            case "ConstInitVal":
+                System.out.println("[DEBUG] 处理 ConstInitVal 节点");
+                // ConstInitVal should have one child: ConstExp or an array initializer
+                // For simple constants, it's ConstExp
+                if (!node.getChildren().isEmpty()) {
+                    visit(node.getChildren().get(0)); // Visit the child expression
+                } else {
+                     System.err.println("[WARN] ConstInitVal has no children!");
+                     // Maybe push a default value like 0? Or let it fail?
+                     // For now, just log it. The subsequent STO might fail if stack is empty.
+                }
+                break;
+
+            case "ConstExp":
+                System.out.println("[DEBUG] 处理 ConstExp 节点");
+                // ConstExp should have one child: AddExp
+                if (!node.getChildren().isEmpty()) {
+                    visit(node.getChildren().get(0)); // Visit the child expression (AddExp)
+                } else {
+                    System.err.println("[WARN] ConstExp has no children!");
+                }
+                break;
+
             case "VarDecl":
                 System.out.println("[DEBUG] 处理 VarDecl");
 
                 for (ASTNode varDef : node.getChildren()) {
+                    System.out.println("[DEBUG][VarDecl] 处理 VarDef 节点");
                     if (!"VarDef".equals(varDef.getType())) {
+                        System.err.println("[ERROR][VarDecl] 非 VarDef 节点，跳过: " + varDef.getType());
                         continue; // 跳过非VarDef节点
                     }
 
                     ASTNode identNode = varDef.getChildren().get(0);
+                    System.out.println("[DEBUG][VarDecl] 处理标识符节点");
                     varName = identNode.getValue();
-                    addr = getVarAddress(varName);
-                    System.out.println("[DEBUG][VarDecl] 变量名: " + varName + "，地址: " + addr);
+                    System.out.println("[DEBUG][VarDecl] 变量名: " + varName);
 
-                    // 如果包含初始化（可能是等号后是 Exp 或 初始化列表）
+                    // 检查变量是否已在 *当前作用域* 存在
+                    if (symbolTableStack.isEmpty()) {
+                         throw new RuntimeException("错误：尝试在没有局部作用域的情况下定义变量 '" + varName + "'");
+                    }
+                    Map<String, Symbol> currentScope = symbolTableStack.peek(); // 获取当前作用域
+                    if (currentScope.containsKey(varName)) {
+                        // 变量在当前作用域已定义，抛出错误或警告
+                        System.err.println("[ERROR][VarDecl] 变量 '" + varName + "' 在当前作用域已定义！");
+                        // 可以选择跳过或抛出异常
+                        continue; 
+                    } else {
+                        // 变量在当前作用域未定义，注册新变量
+                        // --- 修正 level 和 offset 计算 ---
+                        int currentLevelVar;
+                        int currentOffsetVar;
+                        if (symbolTableStack.size() == 1) { // 只包含基础作用域，说明是全局变量
+                            currentLevelVar = GLOBAL_LEVEL; // -1
+                            currentOffsetVar = globalSymbolTable.size(); // 全局偏移量
+                        } else { // 栈大小 > 1，说明是局部变量
+                            // PCode 的层级通常从 0 开始代表第一个局部作用域
+                            currentLevelVar = symbolTableStack.size() - 1; // 0 for func, 1 for block inside func, etc.
+                            currentOffsetVar = currentScope.size(); // 当前局部作用域内的偏移量
+                        }
+                        // --- 结束修正 ---
+                        
+                        Symbol symNew = new Symbol(varName, "var", currentLevelVar); // 使用计算出的 level
+                        symNew.offset = currentOffsetVar; // 使用计算出的 offset
+                        registerSymbol(symNew); // registerSymbol 会根据 level 决定放入全局表还是栈顶 Map
+                        System.out.println("[DEBUG][VarDecl] 注册新变量: " + varName + ", level=" + symNew.level + ", offset=" + symNew.offset);
+                    }
+
+                    // 获取符号信息（现在 getSymbol 会正确查找）
+                    sym = getSymbol(varName); 
+                    System.out.println("[DEBUG][VarDecl] 获取变量信息: " + varName + "，level=" + sym.level + "，offset=" + sym.offset);
+
+                    // 如果包含初始化
                     if (varDef.getChildren().size() > 1) {
                         System.out.println("[DEBUG][VarDecl] 检测到初始化表达式，生成中间代码...");
                         ASTNode initValNode = varDef.getChildren().get(varDef.getChildren().size() - 1);
                         visit(initValNode); // visit InitVal / Exp / {...}
-                        emit(new PCode(PCode.OpCode.STO, 0, addr), varDef);
-                        System.out.println("[DEBUG][VarDecl] 已生成 STO 指令，将值存入变量地址 " + addr);
+                        
+                        // --- 使用修正后的偏移量计算逻辑生成 STO ---
+                        finalOffset = sym.offset;
+                        // VarDecl 定义的变量不是参数，isParam 应为 false，无需 +1
+                        // if (sym.level != GLOBAL_LEVEL && sym.isParam) { 
+                        //    finalOffset += 1;
+                        // }
+                        emit(new PCode(PCode.OpCode.STO, sym.level, finalOffset), varDef);
+                        // --- 结束修正 ---
+                        
+                        System.out.println("[DEBUG][VarDecl] 生成 STO 指令，将值存入变量 " + varName);
                     }
                 }
                 break;
@@ -342,9 +604,9 @@ public class CodeGenerator {
                 visit(node.getChildren().get(1)); // 访问右值表达式
                 ASTNode lval = node.getChildren().get(0);
                 String name = lval.getChildren().get(0).getValue();
-                int addrStore = getVarAddress(name);
-                System.out.println("[DEBUG] 生成 STO 指令: 存储到变量 " + name + " (地址 " + addrStore + ")");
-                emit(new PCode(PCode.OpCode.STO, 0, addrStore), node);
+                Symbol symStore = getSymbol(name);
+                System.out.println("[DEBUG] 生成 STO 指令: 存储到变量 " + name + " (地址 " + symStore.offset + ")");
+                emit(new PCode(PCode.OpCode.STO, symStore.level, symStore.offset + (symStore.isParam ? 1 : 0)), node);
                 // 赋值语句的值通常不留在栈上，STO 会消耗栈顶元素
                 break;
 
@@ -358,12 +620,12 @@ public class CodeGenerator {
 
                 ASTNode lvalNode = node.getChildren().get(0);
                 name = lvalNode.getChildren().get(0).getValue();
-                addr = getVarAddress(name);
+                sym = getSymbol(name);
 
-                System.out.println("[DEBUG] 左值变量名: " + name + "，变量地址: " + addr);
+                System.out.println("[DEBUG] 左值变量名: " + name + "，变量地址: " + sym.offset);
 
-                System.out.println("[DEBUG] [AssignExp] 生成 STO 指令: " + name + " 地址 " + addr);
-                emit(new PCode(PCode.OpCode.STO, 0, addr), node);
+                System.out.println("[DEBUG] [AssignExp] 生成 STO 指令: " + name + " 地址 " + sym.offset);
+                emit(new PCode(PCode.OpCode.STO, sym.level, sym.offset + (sym.isParam ? 1 : 0)), node);
                 break;
             
 
@@ -567,9 +829,11 @@ public class CodeGenerator {
                 // LVal 在表达式右侧表示加载值
                 System.out.println("[DEBUG] 处理 LVal (作为右值)");
                 String varNameRVal = node.getChildren().get(0).getValue(); // LVal -> IDENFR
-                int addrRVal = getVarAddress(varNameRVal);
-                System.out.println("[DEBUG] 生成 LOD 指令: 加载变量 " + varNameRVal + " (地址 " + addrRVal + ")");
-                emit(new PCode(PCode.OpCode.LOD, 0, addrRVal), node);
+                System.out.println("[DEBUG] 加载变量: " + varNameRVal);
+                sym = getSymbol(varNameRVal);
+                System.out.println("[DEBUG] 生成 LOD 指令: 加载变量 " + varNameRVal + " (地址 " + sym.offset + ")");
+                emit(new PCode(PCode.OpCode.LOD, sym.level, sym.offset), node);
+                System.out.println("[DEBUG] LVal 处理完成");
                 break;
 
             case "CallExpr":
@@ -588,10 +852,10 @@ public class CodeGenerator {
                     visit(arg); // 每个参数压栈 ✅
                 }
 
-                // 🧩 2. 【新增】插入 STO 指令，把参数从栈存入函数作用域内存（bp + 0, bp + 1, ...）
-                for (int i = args.size() - 1; i >= 0; i--) {
-                    emit(new PCode(PCode.OpCode.STO, 0, i), node); // 从栈顶逆序存入
-                }
+                // // 🧩 2. 【新增】插入 STO 指令，把参数从栈存入函数作用域内存（bp + 0, bp + 1, ...）
+                // for (int i = args.size() - 1; i >= 0; i--) {
+                //     emit(new PCode(PCode.OpCode.STO, 0, i), node); // 从栈顶逆序存入
+                // }
                 
                 // ✅ 3. CALL 跳转 获取函数入口地址
                 Integer funcAddr = funcEntryMap.get(calledFuncName);
@@ -602,7 +866,8 @@ public class CodeGenerator {
                 
                 // 生成 CALL 指令
                 System.out.println("[DEBUG] 生成 CALL 指令，跳转到函数 '" + calledFuncName + "' 的入口地址: " + funcAddr);
-                emit(new PCode(PCode.OpCode.CALL, 0, funcAddr), node);
+                // emit(new PCode(PCode.OpCode.CALL, 0, funcAddr), node);
+                emit(new PCode(PCode.OpCode.CALL, args.size(), funcAddr), node); // 调用时传递参数个数
                 break;
 
             // 处理一元表达式
@@ -731,11 +996,12 @@ public class CodeGenerator {
                     // 取左边的变量名（Lval的孩子是Ident节点）
                     ASTNode identNode = lvalNode.getChildren().get(0); // 这一步！！！！一定要先.get(0)，到IDENFR
 
-                    addr = getVarAddress(lvalNode.getChildren().get(0).getValue()); // 获取变量i的地址
-                    System.out.println("[DEBUG] [ForInit] 左值变量名: " + lvalNode.getValue() + "，地址: " + addr);
+                    String forVarName = lvalNode.getChildren().get(0).getValue();
+                    Symbol forSym = getSymbol(forVarName);
+                    System.out.println("[DEBUG] [ForInit] 左值变量名: " + lvalNode.getValue() + "，地址: " + forSym.offset);
 
-                    emit(new PCode(PCode.OpCode.STO, 0, addr), initNode); // 把2存到i
-                    System.out.println("[DEBUG][ForInit] 把初始化值存到地址 " + addr);
+                    emit(new PCode(PCode.OpCode.STO, forSym.level, forSym.offset + (forSym.isParam ? 1 : 0)), initNode);
+                    System.out.println("[DEBUG][ForInit] 把初始化值存到地址 " + forSym.offset);
                 }
             
                 int condLabel = labelCount++;
@@ -1007,22 +1273,40 @@ public class CodeGenerator {
     }
     
 
-    private int getVarAddress(String varName) {
-        if (varName == null || varName.isEmpty()) {
-            System.err.println("[ERROR] CodeGenerator: 无效的变量名!");
-            return -1; // 返回无效地址
-        }
+    // private int getVarAddress(String varName) {
+    //     if (varName == null || varName.isEmpty()) {
+    //         System.err.println("[ERROR] CodeGenerator: 无效的变量名!");
+    //         return -1; // 返回无效地址
+    //     }
 
-        // 如果变量已经有地址，直接返回
-        if (varAddressMap.containsKey(varName)) {
-            return varAddressMap.get(varName);
-        }
+    //     // 如果变量已经有地址，直接返回
+    //     if (varAddressMap.containsKey(varName)) {
+    //         return varAddressMap.get(varName);
+    //     }
 
-        // 为新变量分配地址
-        int address = nextVarAddress++;
-        varAddressMap.put(varName, address);
-        System.out.println("[DEBUG] 为变量 '" + varName + "' 分配新地址: " + address);
-        return address;
-    }   
+    //     // 为新变量分配地址
+    //     int address = nextVarAddress++;
+    //     varAddressMap.put(varName, address);
+
+    //     // ✅ 同时构建 Symbol 对象（默认 level 为 0，可以之后调整）
+    //     Symbol sym = new Symbol(varName, "int", 0);
+    //     sym.offset = address;
+    //     symbolInfoMap.put(varName, sym);
+
+    //     System.out.println("[DEBUG] 为变量 '" + varName + "' 分配新地址: " + address);
+    //     return address;
+    // }   
+
+
+    // 这俩代码用来简化的（还没用）
+    private void emitLOD(String name, ASTNode node) {
+        Symbol sym = getSymbol(name);
+        emit(new PCode(PCode.OpCode.LOD, sym.level, sym.offset + (sym.isParam ? 1 : 0)), node);
+    }
+    private void emitSTO(String name, ASTNode node) {
+        Symbol sym = getSymbol(name);
+        emit(new PCode(PCode.OpCode.STO, sym.level, sym.offset + (sym.isParam ? 1 : 0)), node);
+    }
+    
 
 }
